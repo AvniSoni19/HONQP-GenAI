@@ -1,0 +1,145 @@
+import javalang
+from javalang.tree import *
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from antlr4 import *
+from Java8Lexer import Java8Lexer
+from Java8Parser import Java8Parser
+from Java8ParserListener import Java8ParserListener
+
+class JavaCodeDescriptionListener(Java8ParserListener):
+    def __init__(self):
+        self.method_info = []
+
+    def enterMethodDeclaration(self, ctx):
+        method_name = ctx.methodHeader().methodDeclarator().Identifier().getText()
+        method_body = ctx.methodBody().getText()
+        if method_name.startswith("generate") and method_name.endswith("Id"):
+            variable_name = method_name[len("generate"): -len("Id")].lower() + "Id"
+
+            conversion_type = "uppercase" if "toUpperCase()" in method_body else "lowercase"
+
+            if("substring(0," in method_body):
+                sub = "first " + method_body[method_body.index("substring(0,")+12:method_body.index(")")]
+            else:
+                sub = "last " + method_body[method_body.index("-")+1:method_body.index(".to")-1]
+            
+            var = method_body[method_body.index("=")+1:method_body.index("substring")-1]
+            if("this." in var):
+                var=var[5:]
+
+            # Construct the description
+            description = (
+                f"This method auto generates and sets the {variable_name}\n"
+                f"The {variable_name} would be prefixed by the {sub} "
+                f"characters of the {var} in {conversion_type} followed by auto-generated "
+                f"value starting from 1001\n"
+                f"The auto-generated value would be incremented by one for the next {variable_name}\n"
+                "Use static variable counter appropriately to implement the auto generation logic"
+            )
+            self.method_info.append((method_name, description))
+
+# Input the Java code file path from the user
+java_code_file = input("Enter the path to the Java code file: ")
+
+# Read Java code from the file
+try:
+    with open(java_code_file, 'r') as file:
+        java_code = file.read()
+except FileNotFoundError:
+    print(f"File '{java_code_file}' not found. Please provide a valid file name.")
+    exit()
+
+# Parse the Java code
+tree = javalang.parse.parse(java_code)
+
+# Create a new Word document
+doc = Document()
+
+# Iterate through the parsed tree to find and process class declarations
+for _, node in tree:
+    if isinstance(node, ClassDeclaration):
+        class_name = node.name
+
+        # Initialize variables to store class-specific variables and methods
+        variables = []
+        methods = []
+
+        # Process the class-specific structure
+        for _, class_node in node:
+            if isinstance(class_node, FieldDeclaration):
+                data_type = class_node.type.name
+                for variable in class_node.declarators:
+                    variable_name = variable.name
+                    variables.append(f"+ {variable_name}: {data_type}")
+
+            if isinstance(class_node, MethodDeclaration):
+                return_type = class_node.return_type.name if class_node.return_type else "void"
+                method_name = class_node.name
+                parameters = [f"{param.name}: {param.type.name}" for param in class_node.parameters]
+                method_signature = f"+ {method_name}({', '.join(parameters)}): {return_type}"
+                methods.append(method_signature)
+
+        # Create a table-like structure with borders only between sections for the current class
+        table = doc.add_table(rows=3, cols=1)
+        table.autofit = False
+        table.style = "Table Grid"
+        table.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+
+        # Populate the table with class name, variables, methods, and horizontal lines between sections
+        cell = table.rows[0].cells[0]
+        cell.text = class_name
+        cell.paragraphs[0].alignment = WD_PARAGRAPH_ALIGNMENT.LEFT  # Left align the class name
+
+        # Set class name in bold
+        run = cell.paragraphs[0].runs[0]
+        run.bold = True
+        run.font.size = Pt(12)
+
+        # Use tcPr to add a border to the first row
+        tc_pr = cell._tc.get_or_add_tcPr()
+        tc_borders = OxmlElement("w:tcBorders")
+        tc_borders.set(qn("w:bottom"), "single")
+        tc_pr.append(tc_borders)
+
+        for variable in variables:
+            row = table.rows[1].cells[0]
+            row.text += f"{variable}\n"
+
+        for method in methods:
+            row = table.rows[2].cells[0]
+            row.text += f"{method}\n"
+
+        # Add a paragraph with spacing after each table
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(12)
+
+# Add a section for method descriptions
+doc.add_paragraph("\nMETHOD DESCRIPTION").bold = True
+doc.add_paragraph("")  # Add a blank line for spacing
+
+# Process method descriptions
+lexer = Java8Lexer(InputStream(java_code))
+stream = CommonTokenStream(lexer)
+parser = Java8Parser(stream)
+
+# Walk the AST and extract code information
+listener = JavaCodeDescriptionListener()
+walker = ParseTreeWalker()
+walker.walk(listener, parser.compilationUnit())
+
+# Access code information
+method_info = listener.method_info
+
+# Print the descriptions for relevant methods
+for method_name, description in method_info:
+    doc.add_paragraph(f"\nMethod Name: {method_name}").bold = True
+    doc.add_paragraph(description)
+
+# Save the document to a file
+doc.save("JavaOutputFile.docx")
+
+print("Java class diagrams with method descriptions have been saved to JavaOutputFile.docx.")
